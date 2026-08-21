@@ -1,0 +1,41 @@
+#!/bin/sh
+# hnsw pre-commit gate.
+#
+# There is no CI on this repository, so this hook is the gate. Install it with:
+#
+#     make hooks
+#
+# Two escape hatches, both deliberate:
+#
+#   HNSW_SKIP_HOOK=1     skip the checks entirely (WIP branches)
+#   HNSW_HOOK_TARGET=... run a different make target, e.g. docker-check on a
+#                        host where the native toolchain cannot link
+
+set -e
+
+if [ "$HNSW_SKIP_HOOK" = "1" ]; then
+    echo "pre-commit: skipped via HNSW_SKIP_HOOK=1"
+    exit 0
+fi
+
+TARGET="${HNSW_HOOK_TARGET:-check}"
+
+echo "pre-commit: running make $TARGET"
+if ! make "$TARGET"; then
+    echo
+    echo "pre-commit: checks failed, commit aborted."
+    echo "  fix the problems above, or set HNSW_SKIP_HOOK=1 to bypass."
+    echo "  no linker on this host? try HNSW_HOOK_TARGET=docker-check git commit"
+    exit 1
+fi
+
+# docs/ is a committed build artefact served directly by GitHub Pages. If the
+# index or the page changed, rebuild it so the published demo never lags the
+# source it claims to be running.
+if git diff --cached --name-only | grep -qE '^(src/|web/|assets/)'; then
+    echo "pre-commit: index or page changed, rebuilding docs/"
+    make demo
+    git add docs/hnsw.wasm docs/index.html
+fi
+
+exit 0
