@@ -1,0 +1,42 @@
+[package]
+name = "hnsw"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+description = "Hierarchical Navigable Small World approximate nearest-neighbour search, implemented from scratch with no dependencies"
+authors = ["Aminyx"]
+repository = "https://github.com/aminyx/hnsw"
+keywords = ["hnsw", "ann", "vector-search", "nearest-neighbor", "embeddings"]
+categories = ["algorithms", "data-structures"]
+exclude = ["docs/", "docs-assets/", "web/"]
+
+[lib]
+# `cdylib` for the browser demo (plain `extern "C"`, no wasm-bindgen),
+# `rlib` for the CLI and the test binaries.
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "hnswctl"
+path = "src/bin/hnswctl.rs"
+
+# Deliberately empty. Every line of the index, the PRNG, the distance
+# kernels, the CRC and the CLI argument parser is in this repository.
+[dependencies]
+
+[dev-dependencies]
+
+# The recall test builds a 5000 x 64 index. Unoptimised float loops make that
+# take minutes, so the dev/test profiles carry enough optimisation to keep
+# `cargo test` under a minute while still preserving debug assertions.
+[profile.dev]
+opt-level = 2
+
+[profile.test]
+opt-level = 2
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

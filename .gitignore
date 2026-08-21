@@ -1,0 +1,16 @@
+# Build artefacts. Note that docs/ is NOT ignored: GitHub Pages serves the
+# demo straight out of it, so the compiled hnsw.wasm is committed on purpose.
+/target
+/target-*
+
+# Scratch files from CLI sessions
+*.hnsw
+*.csv
+!assets/*.csv
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
