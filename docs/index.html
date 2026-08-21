@@ -1,0 +1,753 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>hnsw — approximate nearest-neighbour search, running in your browser</title>
+<meta name="description" content="A from-scratch Hierarchical Navigable Small World index compiled to WebAssembly. It builds a real graph over 25,000 word vectors in the page, then shows you every hop the search takes.">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0a0d13;
+    --panel: #111621;
+    --panel-2: #18202e;
+    --edge: #212b3d;
+    --edge-soft: #1a2231;
+    --ink: #e7ecf5;
+    --dim: #8794ab;
+    --dimmer: #5c6880;
+    --accent: #7cc4ff;
+    --accent-deep: #1f6feb;
+    --good: #5ddba0;
+    --warn: #f0b45f;
+    --bad: #ff7b72;
+    --l0: #7cc4ff;
+    --l1: #b48ef5;
+    --l2: #f0b45f;
+    --l3: #5ddba0;
+    --l4: #ff8fa3;
+    --l5: #4dd8d0;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; min-height: 100dvh; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  a { color: var(--accent); }
+  a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+
+  header {
+    border-bottom: 1px solid var(--edge);
+    padding: 22px 24px 20px;
+  }
+  .head-inner { max-width: 1240px; margin: 0 auto; display: flex; gap: 20px 28px; flex-wrap: wrap; align-items: baseline; }
+  h1 { font-size: 18px; margin: 0; letter-spacing: .01em; font-weight: 600; }
+  h1 span { color: var(--accent); }
+  header p { margin: 0; color: var(--dim); font-size: 13.5px; max-width: 62ch; }
+  header a { text-decoration: none; font-size: 13.5px; margin-left: auto; white-space: nowrap; }
+  header a:hover { text-decoration: underline; }
+
+  main { max-width: 1240px; margin: 0 auto; padding: 20px 24px 48px; display: grid; gap: 18px; }
+  .columns { display: grid; gap: 18px; align-items: start;
+              grid-template-columns: minmax(0, 1fr) minmax(0, 1.02fr); }
+  /* Two stacks rather than two cards: the search cost sits under the results
+     it describes, which is both where it belongs and what keeps the two
+     columns the same height instead of ending the page in dead space. */
+  .col { display: grid; gap: 18px; align-content: start; min-width: 0; }
+  /* Stack before the statistics card gets too narrow for its five tiles:
+     below this width the card falls back to one column and the two page
+     columns end up visibly unequal. */
+  @media (max-width: 1065px) { .columns { grid-template-columns: 1fr; } }
+
+  section { min-width: 0; }
+  .card {
+    background: var(--panel); border: 1px solid var(--edge);
+    border-radius: var(--radius); padding: 16px;
+  }
+  h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .14em;
+    color: var(--dim); margin: 0 0 12px; font-weight: 600;
+  }
+  h2 .aside { text-transform: none; letter-spacing: 0; color: var(--dimmer); font-weight: 400; margin-left: 8px; }
+
+  .searchrow { display: flex; gap: 10px; flex-wrap: wrap; }
+  input[type="text"] {
+    flex: 1 1 240px; min-width: 0;
+    background: var(--panel-2); color: var(--ink);
+    border: 1px solid var(--edge); border-radius: 8px;
+    padding: 11px 13px; font: 15px/1.3 var(--mono);
+  }
+  input[type="text"]::placeholder { color: var(--dimmer); }
+  input[type="text"]:focus { border-color: var(--accent-deep); outline: none; }
+  button {
+    background: var(--panel-2); color: var(--ink); border: 1px solid var(--edge);
+    border-radius: 8px; padding: 10px 14px; font-size: 13.5px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent-deep); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: var(--accent-deep); border-color: var(--accent-deep); font-weight: 600; }
+  button.primary:hover:not(:disabled) { filter: brightness(1.14); }
+
+  .suggest { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 11px; align-items: baseline; }
+  .suggest span { color: var(--dimmer); font-size: 12.5px; }
+  .chip {
+    font: 12.5px var(--mono); padding: 4px 9px; border-radius: 999px;
+    background: transparent; border: 1px solid var(--edge); color: var(--dim);
+  }
+  .chip:hover { color: var(--ink); border-color: var(--accent-deep); }
+
+  .controls { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; margin-top: 14px;
+              padding-top: 14px; border-top: 1px solid var(--edge-soft); }
+  .control { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--dim); }
+  .control label { white-space: nowrap; }
+  .control input[type="range"] { width: 128px; accent-color: var(--accent-deep); }
+  .control output { font: 12.5px var(--mono); color: var(--ink); min-width: 3ch; }
+  .control-m label { white-space: normal; }
+  .cost { color: var(--warn); font-size: 12px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th {
+    text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .1em;
+    color: var(--dimmer); font-weight: 600; padding: 0 8px 8px; border-bottom: 1px solid var(--edge);
+  }
+  th.num, td.num { text-align: right; }
+  td { padding: 7px 8px; border-bottom: 1px solid var(--edge-soft); }
+  tbody tr:last-child td { border-bottom: none; }
+  td.rank { color: var(--dimmer); font: 12.5px var(--mono); width: 3ch; }
+  td.word { font: 14.5px var(--mono); }
+  td.num { font: 13px var(--mono); color: var(--dim); }
+  .miss td.word { color: var(--warn); }
+  .tag {
+    font: 10.5px var(--mono); padding: 2px 6px; border-radius: 4px;
+    border: 1px solid var(--edge); color: var(--dimmer); margin-left: 8px; vertical-align: 1px;
+  }
+  .tag.miss { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+
+  /* The panel paints nothing of its own: no background, no border, no gap.
+     Every hairline you see belongs to a tile, so an unfilled grid cell is
+     simply the card behind it and a short last row cannot show as a lit
+     rectangle. The column count is also pinned to 1 or 5 and never 2, 3 or 4
+     — those are exactly the counts that leave a hole in the last row. */
+  .stats-card { container-type: inline-size; }
+  .stats { display: grid; grid-template-columns: 1fr; gap: 0;
+           background: transparent; border: 0; border-radius: 8px; overflow: hidden; }
+  /* min-width: 0 lets a track shrink below its longest label, so five tiles
+     stay on one row and the labels wrap instead of the grid. */
+  .stat { background: var(--panel); padding: 11px 12px; min-width: 0;
+          border: 1px solid var(--edge-soft); border-bottom-width: 0;
+          display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
+  .stat:last-child { border-bottom-width: 1px; }
+  .stat dt { font-size: 10.5px; text-transform: uppercase; letter-spacing: .09em;
+             color: var(--dimmer); margin: 0; line-height: 1.3; overflow-wrap: anywhere; }
+  .stat dd { margin: 0; font: 17px/1.2 var(--mono); color: var(--ink); }
+  .stat dd small { font-size: 11.5px; color: var(--dim); }
+  .stat.hero dd { color: var(--accent); }
+  @container (min-width: 430px) {
+    .stats { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    .stat { display: block; border-bottom-width: 1px; border-right-width: 0; }
+    .stat:last-child { border-right-width: 1px; }
+    /* min-height reserves two lines so a label that wraps does not push its
+       value out of line with the tiles beside it. */
+    .stat dt { margin: 0 0 4px; min-height: 2.6em; }
+  }
+
+  canvas { width: 100%; height: auto; display: block; border-radius: 8px; background: var(--panel-2); }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; font-size: 12px; color: var(--dim); }
+  .legend b { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: 0; }
+
+  .layers { display: grid; gap: 5px; font: 12.5px var(--mono); }
+  .layer { display: grid; grid-template-columns: 4.5rem 1fr auto; gap: 10px; align-items: center; }
+  .layer-name { color: var(--dim); }
+  .bar { height: 15px; border-radius: 3px; background: var(--edge-soft); position: relative; overflow: hidden; }
+  .bar i { position: absolute; inset: 0 auto 0 0; display: block; border-radius: 3px; }
+  .bar u { position: absolute; inset: 0 auto 0 0; display: block; border-radius: 3px; background: rgba(255,255,255,.72); mix-blend-mode: overlay; }
+  .layer-count { color: var(--dimmer); }
+
+  .progress {
+    height: 4px; border-radius: 2px; background: var(--edge-soft);
+    overflow: hidden; margin-top: 14px; display: none;
+  }
+  .progress.on { display: block; }
+  .progress i {
+    display: block; height: 100%; width: 0;
+    background: linear-gradient(90deg, var(--accent-deep), var(--accent));
+    transition: width .12s linear;
+  }
+
+  .note { color: var(--dim); font-size: 13px; margin: 0; }
+  .oov {
+    margin: -2px 0 12px; padding: 9px 11px; border-radius: 6px; font-size: 12.5px;
+    line-height: 1.45; color: var(--warn);
+    background: color-mix(in srgb, var(--warn) 9%, transparent);
+    border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+  }
+  .oov b { font-family: var(--mono); font-weight: 400; color: var(--ink); }
+  .note code, code { font: .92em var(--mono); color: var(--ink); background: var(--panel-2);
+                     padding: 1px 5px; border-radius: 4px; }
+  .status { font: 12.5px var(--mono); color: var(--dim); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dimmer); flex: none; }
+  .dot.ok { background: var(--good); }
+  .dot.busy { background: var(--warn); }
+  .dot.err { background: var(--bad); }
+  .err-text { color: var(--bad); }
+
+  /* Touch targets. On a coarse pointer every control clears the 24x24 CSS px
+     of WCAG 2.5.8 with room to spare; a mouse never sees any of this, so the
+     desktop controls keep their thin, quiet proportions. */
+  @media (pointer: coarse) {
+    .searchrow { gap: 12px; }
+    input[type="text"] { padding: 13px 13px; }
+    button { min-height: 44px; padding: 12px 18px; }
+    .chip { min-height: 36px; padding: 8px 14px; display: inline-flex; align-items: center; }
+    .suggest { gap: 9px; }
+    .controls { gap: 16px 20px; }
+    .control { flex: 1 1 250px; }
+    /* Chrome keeps the track thin and vertically centred inside a taller
+       range box, so this buys hit area without a fatter-looking slider. */
+    .control input[type="range"] { flex: 1 1 140px; width: auto; min-width: 130px; height: 34px; }
+    /* The M warning is a sentence, not a word: give it its own line rather
+       than squeezing the slider into what is left of the row. */
+    .control-m { flex-wrap: wrap; }
+    .control-m label { flex: 1 1 100%; }
+  }
+
+  footer { max-width: 1240px; margin: 0 auto; padding: 0 24px 48px; color: var(--dim); font-size: 13px; }
+  footer p { max-width: 78ch; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="head-inner">
+    <h1>hnsw<span>·</span>demo</h1>
+    <p>
+      A Hierarchical Navigable Small World index written from scratch in Rust and compiled to
+      WebAssembly. The graph is <em>built in this tab</em> over 25,000 English words — no server,
+      no API, no precomputed answers — and every query reports the hops it took to get there.
+    </p>
+    <a href="https://github.com/aminyx/hnsw">source on GitHub →</a>
+  </div>
+</header>
+
+<main>
+  <div class="card">
+    <h2>Query <span class="aside">nearest neighbours by cosine distance</span></h2>
+    <div class="searchrow">
+      <label class="sr-only" for="q">Search the index</label>
+      <input id="q" type="text" placeholder="a 3–8 letter English word — “night”, “govern”, “ocean”…" spellcheck="false" autocomplete="off" disabled>
+      <button id="go" class="primary" disabled>Search</button>
+    </div>
+    <div class="suggest">
+      <span>try</span>
+      <button class="chip" type="button">night</button>
+      <button class="chip" type="button">govern</button>
+      <button class="chip" type="button">ocean</button>
+      <button class="chip" type="button">quantum</button>
+      <button class="chip" type="button">thunder</button>
+      <button class="chip" type="button">zzyzx</button>
+      <span style="margin-left:4px">— the last one is not a word, and still finds neighbours</span>
+    </div>
+    <div class="controls">
+      <div class="control">
+        <label for="ef">ef_search</label>
+        <input id="ef" type="range" min="4" max="400" step="4" value="64">
+        <output id="ef-out">64</output>
+      </div>
+      <div class="control">
+        <label for="k">results</label>
+        <input id="k" type="range" min="1" max="25" step="1" value="10">
+        <output id="k-out">10</output>
+      </div>
+      <div class="control control-m">
+        <label for="m">M <span class="cost">moving this rebuilds the whole index — up to ~24 s</span></label>
+        <input id="m" type="range" min="4" max="32" step="4" value="12">
+        <output id="m-out">12</output>
+      </div>
+      <div class="status" role="status" aria-live="polite">
+        <span class="dot" id="dot"></span><span id="status">loading…</span>
+      </div>
+    </div>
+    <div class="progress" id="progress" role="progressbar" aria-label="Index build progress"
+         aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="progress-bar"></i></div>
+  </div>
+
+  <div class="columns">
+    <section class="col">
+      <div class="card">
+        <h2>Results <span class="aside" id="res-aside"></span></h2>
+        <p class="oov" id="oov" hidden></p>
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">#</th>
+              <th scope="col">word</th>
+              <th scope="col" class="num">cosine distance</th>
+            </tr>
+          </thead>
+          <tbody id="results">
+            <tr><td colspan="3" class="note" style="padding:14px 8px">Waiting for the index to build…</td></tr>
+          </tbody>
+        </table>
+        <p class="note" style="margin-top:14px" id="recall-note"></p>
+      </div>
+
+      <div class="card stats-card">
+        <h2>What the search cost</h2>
+        <dl class="stats">
+          <div class="stat hero"><dt>index scanned</dt><dd id="s-scan">—</dd></div>
+          <div class="stat"><dt>nodes visited</dt><dd id="s-visited">—</dd></div>
+          <div class="stat"><dt>hops</dt><dd id="s-hops">—</dd></div>
+          <div class="stat"><dt>recall@k</dt><dd id="s-recall">—</dd></div>
+          <div class="stat"><dt>query time</dt><dd id="s-time">—</dd></div>
+        </dl>
+        <p class="note" style="margin-top:12px">
+          <strong>Recall</strong> is measured live against an exhaustive scan of all
+          <span id="n-words">—</span> vectors, run right after the graph search. It is the
+          fraction of the true nearest neighbours the graph actually found.
+        </p>
+      </div>
+    </section>
+
+    <section class="col">
+      <div class="card">
+        <h2>The descent <span class="aside">distance to the query, in visit order</span></h2>
+        <canvas id="trace" width="760" height="260" role="img"
+                aria-label="Scatter plot of each visited node's distance to the query against the order it was visited, coloured by layer."></canvas>
+        <div class="legend" id="legend"></div>
+        <p class="note" style="margin-top:10px">
+          Each dot is one node the search evaluated. Time runs left to right, distance runs
+          bottom to top. The sparse upper layers cover the distance in a handful of hops;
+          layer&nbsp;0 is the dense cloud at the end where the beam refines the answer.
+        </p>
+      </div>
+
+      <div class="card">
+        <h2>Graph <span class="aside">layer populations, and how much of each was touched</span></h2>
+        <div class="layers" id="layers"></div>
+        <p class="note" style="margin-top:12px" id="graph-note"></p>
+      </div>
+    </section>
+  </div>
+</main>
+
+<footer>
+  <p>
+    <strong>These are toy embeddings.</strong> Each word is turned into a 64-dimensional vector by
+    hashing its character 1-, 2- and 3-grams into signed buckets and normalising — no model, no
+    training, no weights to download. So neighbours here are words that <em>share letter
+    sequences</em>, not words that share meaning: <code>night</code> finds <code>nights</code> and
+    <code>knight</code>, never <code>evening</code>. That is a property of the embedding, not of the
+    index. Swap in real embeddings and nothing about the search changes — which is exactly the point:
+    the index does not know or care where the vectors came from.
+  </p>
+  <p style="margin-bottom:0">
+    The vocabulary is every three-to-eight-letter entry in a public American English word list.
+    Everything on this page runs locally in WebAssembly; the only network request is for the
+    <code>.wasm</code> file itself.
+  </p>
+</footer>
+
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const enc = new TextEncoder();
+const dec = new TextDecoder();
+
+const LAYER_COLORS = ["--l0", "--l1", "--l2", "--l3", "--l4", "--l5"];
+/** Build-time beam width. Low enough to index 25k words in a few seconds,
+ *  high enough that the graph is exact at a modest `ef_search`. */
+const EF_CONSTRUCTION = 48;
+const SEED = 20260821;
+/** Words inserted per animation frame. */
+const CHUNK = 600;
+
+let wasm = null;
+let info = null;
+let lastResult = null;
+let moduleKb = "";
+let built = false;
+
+/** Seconds of build time per unit of M, measured on this machine. */
+let buildRate = null;
+
+/**
+ * Wall-clock cost of a full rebuild at a given `M`, in seconds.
+ *
+ * Nothing here is free: `M` is the neighbour budget per node, so raising it
+ * raises both the candidate lists the builder maintains and the pruning work
+ * per insert. Cost is near enough linear in `M`, so once one build has been
+ * timed the page can quote the rest from that machine's own rate. Before
+ * then it quotes a deliberately pessimistic laptop figure: about 24 s at the
+ * top of the slider. Either way the number is on screen before it is spent.
+ */
+function rebuildSeconds(m) {
+  return Math.max(2, Math.round(m * (buildRate ?? 0.75)));
+}
+
+function css(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function setStatus(text, kind = "") {
+  $("status").textContent = text;
+  $("dot").className = "dot" + (kind ? " " + kind : "");
+}
+
+/** Read a [tag][len][payload] block, copy it out, and free the wasm side. */
+function readBlock(pointer) {
+  if (!pointer) throw new Error("the wasm module returned a null pointer");
+  const view = new DataView(wasm.memory.buffer, pointer, 8);
+  const tag = view.getUint32(0, true);
+  const len = view.getUint32(4, true);
+  const bytes = new Uint8Array(wasm.memory.buffer, pointer + 8, len).slice();
+  wasm.hnsw_free(pointer);
+  const text = dec.decode(bytes);
+  if (tag !== 0) throw new Error(text);
+  return JSON.parse(text);
+}
+
+function callWithText(name, text, ...rest) {
+  const bytes = enc.encode(text);
+  const pointer = wasm.hnsw_alloc(bytes.length);
+  new Uint8Array(wasm.memory.buffer, pointer, bytes.length).set(bytes);
+  try {
+    return readBlock(wasm[name](pointer, bytes.length, ...rest));
+  } finally {
+    wasm.hnsw_free_input(pointer, bytes.length);
+  }
+}
+
+async function boot() {
+  setStatus("fetching module…", "busy");
+  const response = await fetch("./hnsw.wasm");
+  if (!response.ok) throw new Error(`could not fetch hnsw.wasm (${response.status})`);
+  const bytes = await response.arrayBuffer();
+  const { instance } = await WebAssembly.instantiate(bytes, {});
+  wasm = instance.exports;
+  moduleKb = (bytes.byteLength / 1024).toFixed(0);
+  build(Number($("m").value));
+}
+
+/**
+ * Build the index a slice at a time.
+ *
+ * HNSW is incremental by construction: there is no batch phase, no
+ * finalisation, and the graph is a valid searchable index after every single
+ * insert. So the page can hand the module a few hundred words per animation
+ * frame, keep the tab responsive, and show progress that is the actual state
+ * of the graph rather than a spinner.
+ */
+function build(m) {
+  const seconds = rebuildSeconds(m);
+  const verb = built ? "rebuilding" : "indexing";
+  window.__hnswReady = false;
+  info = null;
+  $("q").disabled = true;
+  $("go").disabled = true;
+  $("m").disabled = true;
+  $("progress").classList.add("on");
+  setProgress(0);
+  setStatus(`${verb} the index at M=${m} — about ${seconds} s, search is off until it finishes…`, "busy");
+
+  let begun;
+  try {
+    begun = readBlock(wasm.hnsw_build_begin(m, EF_CONSTRUCTION, SEED));
+  } catch (error) {
+    setStatus(error.message, "err");
+    $("m").disabled = false;
+    return;
+  }
+  const total = begun.total;
+  $("n-words").textContent = total.toLocaleString();
+  setStatus(
+    `${verb} ${total.toLocaleString()} words at M=${m} — about ${seconds} s…`,
+    "busy"
+  );
+
+  const started = performance.now();
+  const step = () => {
+    const done = wasm.hnsw_build_step(CHUNK);
+    setProgress(done / total);
+    if (done < total) {
+      setStatus(
+        `${verb} ${done.toLocaleString()} of ${total.toLocaleString()} words ` +
+        `at M=${m} — about ${seconds} s in total…`,
+        "busy"
+      );
+      requestAnimationFrame(step);
+      return;
+    }
+
+    const elapsed = performance.now() - started;
+    buildRate = elapsed / 1000 / m;
+    info = readBlock(wasm.hnsw_build_info());
+    $("progress").classList.remove("on");
+    renderLayers(null);
+    $("graph-note").innerHTML =
+      `<code>M</code> ${info.m}, <code>m_max0</code> ${info.m_max0}, ` +
+      `<code>ef_construction</code> ${info.ef_construction}, seed ${info.seed}. ` +
+      `${info.edges.toLocaleString()} directed edges, mean layer-0 degree ${info.mean_degree}, ` +
+      `${info.components === 1 ? "one connected component" : info.components + " components"}, ` +
+      `all ${info.reachable.toLocaleString()} nodes reachable from the entry point.`;
+
+    setStatus(
+      `${moduleKb} KB module · ${info.words.toLocaleString()} vectors × ${info.dims} dims ` +
+      `indexed in ${(elapsed / 1000).toFixed(1)} s ` +
+      `(${Math.round(info.words / (elapsed / 1000)).toLocaleString()}/s)`,
+      "ok"
+    );
+    $("q").disabled = false;
+    $("go").disabled = false;
+    $("m").disabled = false;
+    built = true;
+    window.__hnswReady = true;
+    if ($("q").value.trim()) search();
+  };
+  requestAnimationFrame(step);
+}
+
+function setProgress(fraction) {
+  const percent = Math.round(fraction * 100);
+  $("progress-bar").style.width = percent + "%";
+  $("progress").setAttribute("aria-valuenow", String(percent));
+}
+
+function search() {
+  const text = $("q").value.trim();
+  if (!text || !wasm || !info) return;
+  const k = Number($("k").value);
+  const ef = Number($("ef").value);
+
+  let result;
+  const started = performance.now();
+  try {
+    result = callWithText("hnsw_search", text, k, ef);
+  } catch (error) {
+    $("oov").hidden = true;
+    $("results").innerHTML =
+      `<tr><td colspan="3" class="note err-text" style="padding:14px 8px">${escapeHtml(error.message)}</td></tr>`;
+    return;
+  }
+  const elapsed = performance.now() - started;
+  lastResult = result;
+
+  renderResults(result);
+  renderStats(result, elapsed);
+  renderLayers(result);
+  drawTrace(result);
+  window.__hnswLast = result;
+  window.__hnswSeq = (window.__hnswSeq || 0) + 1;
+}
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+function renderResults(result) {
+  const rows = result.results.map((hit, i) => {
+    const missed = hit.exact ? "" : ' <span class="tag miss">not in exact top-k</span>';
+    return `<tr class="${hit.exact ? "" : "miss"}">
+      <td class="rank">${i + 1}</td>
+      <td class="word">${escapeHtml(hit.word)}${missed}</td>
+      <td class="num">${hit.distance.toFixed(4)}</td>
+    </tr>`;
+  });
+  $("results").innerHTML = rows.join("") ||
+    `<tr><td colspan="3" class="note" style="padding:14px 8px">No neighbours found.</td></tr>`;
+  $("res-aside").textContent = `for “${result.query}”`;
+
+  // Any word that is in the vocabulary is its own nearest neighbour at
+  // distance zero, so a top hit that is not the typed word is proof the word
+  // was never indexed. Say so, instead of passing off its neighbours as if
+  // the page had understood the question.
+  const top = result.results[0];
+  const inIndex = !!top && top.word.toLowerCase() === result.query.trim().toLowerCase();
+  const oov = $("oov");
+  oov.hidden = inIndex;
+  oov.innerHTML = inIndex
+    ? ""
+    : `<b>${escapeHtml(result.query)}</b> is not in the index — ` +
+      `these are its nearest neighbours, not a lookup.`;
+
+  const missed = result.exact.filter((e) => !result.results.some((r) => r.word === e.word));
+  $("recall-note").innerHTML = missed.length === 0
+    ? "Every one of the true nearest neighbours was found — this query has perfect recall."
+    : `The exact scan also returns ${missed.map((m) => `<code>${escapeHtml(m.word)}</code>`).join(", ")}, ` +
+      `which the graph walk missed. Raise <code>ef_search</code> and they come back.`;
+}
+
+function renderStats(result, elapsed) {
+  const s = result.stats;
+  $("s-scan").innerHTML = `${s.scanned.toFixed(2)}<small>%</small>`;
+  $("s-visited").textContent = s.visited.toLocaleString();
+  $("s-hops").textContent = s.hops;
+  $("s-recall").textContent = result.recall.toFixed(2);
+  $("s-time").innerHTML = `${elapsed.toFixed(2)}<small> ms</small>`;
+}
+
+function renderLayers(result) {
+  if (!info) return;
+  const perLayer = new Map();
+  if (result) for (const row of result.stats.layers) perLayer.set(row.level, row.visited);
+
+  const top = info.layers.length - 1;
+  const widest = info.layers[0] || 1;
+  const rows = [];
+  for (let level = top; level >= 0; level--) {
+    const size = info.layers[level];
+    const visited = perLayer.get(level) || 0;
+    const colour = css(LAYER_COLORS[Math.min(level, LAYER_COLORS.length - 1)]);
+    // Log scale: layer 0 is ~16x layer 1, so a linear bar shows nothing.
+    const width = (Math.log10(size + 1) / Math.log10(widest + 1)) * 100;
+    const seen = size > 0 ? (visited / size) * width : 0;
+    rows.push(`<div class="layer">
+      <span class="layer-name">layer ${level}</span>
+      <span class="bar"><i style="width:${width.toFixed(1)}%;background:${colour}"></i><u style="width:${seen.toFixed(2)}%"></u></span>
+      <span class="layer-count">${size.toLocaleString()}${result ? ` · ${visited} seen` : ""}</span>
+    </div>`);
+  }
+  $("layers").innerHTML = rows.join("");
+
+  $("legend").innerHTML = info.layers
+    .map((_, level) => {
+      const colour = css(LAYER_COLORS[Math.min(level, LAYER_COLORS.length - 1)]);
+      return `<span><b style="background:${colour}"></b>layer ${level}</span>`;
+    })
+    .reverse()
+    .join("");
+}
+
+function drawTrace(result) {
+  const canvas = $("trace");
+  const ratio = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth || 760;
+  const height = 260;
+  canvas.width = Math.round(width * ratio);
+  canvas.height = Math.round(height * ratio);
+  canvas.style.height = height + "px";
+
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  const trace = result.trace || [];
+  const pad = { left: 44, right: 12, top: 14, bottom: 26 };
+  const plotW = Math.max(1, width - pad.left - pad.right);
+  const plotH = Math.max(1, height - pad.top - pad.bottom);
+
+  const maxDist = Math.max(0.001, ...trace.map((t) => t[0]));
+  const x = (i) => pad.left + (trace.length < 2 ? plotW / 2 : (i / (trace.length - 1)) * plotW);
+  const y = (d) => pad.top + plotH - (d / maxDist) * plotH;
+
+  // Grid and axis labels.
+  ctx.strokeStyle = css("--edge");
+  ctx.fillStyle = css("--dimmer");
+  ctx.font = "11px " + css("--mono").split(",")[0];
+  ctx.lineWidth = 1;
+  for (let step = 0; step <= 4; step++) {
+    const value = (maxDist * step) / 4;
+    const gy = Math.round(y(value)) + 0.5;
+    ctx.globalAlpha = 0.55;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, gy);
+    ctx.lineTo(width - pad.right, gy);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.textAlign = "right";
+    ctx.fillText(value.toFixed(2), pad.left - 8, gy + 4);
+  }
+  ctx.textAlign = "left";
+  ctx.fillText("visit order →", pad.left, height - 8);
+  ctx.textAlign = "right";
+  ctx.fillText(`${trace.length} visits`, width - pad.right, height - 8);
+
+  if (trace.length === 0) return;
+
+  // Best-so-far envelope: the distance of the nearest node seen up to each step.
+  let best = Infinity;
+  ctx.strokeStyle = css("--dim");
+  ctx.globalAlpha = 0.5;
+  ctx.lineWidth = 1.25;
+  ctx.beginPath();
+  trace.forEach((visit, i) => {
+    best = Math.min(best, visit[0]);
+    const px = x(i);
+    const py = y(best);
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  });
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  // One dot per visit, coloured by layer.
+  const size = trace.length > 900 ? 1.5 : trace.length > 350 ? 2 : 2.8;
+  for (let i = 0; i < trace.length; i++) {
+    const [dist, level] = trace[i];
+    ctx.fillStyle = css(LAYER_COLORS[Math.min(level, LAYER_COLORS.length - 1)]);
+    ctx.globalAlpha = level === 0 ? 0.62 : 1;
+    ctx.beginPath();
+    ctx.arc(x(i), y(dist), size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // Mark where the answer landed.
+  const nearest = Math.min(...trace.map((t) => t[0]));
+  ctx.strokeStyle = css("--good");
+  ctx.setLineDash([3, 4]);
+  ctx.beginPath();
+  ctx.moveTo(pad.left, Math.round(y(nearest)) + 0.5);
+  ctx.lineTo(width - pad.right, Math.round(y(nearest)) + 0.5);
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+// -- wiring ----------------------------------------------------------------
+
+$("go").addEventListener("click", search);
+$("q").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") search();
+});
+for (const chip of document.querySelectorAll(".chip")) {
+  chip.addEventListener("click", () => {
+    $("q").value = chip.textContent;
+    search();
+  });
+}
+for (const [id, out] of [["ef", "ef-out"], ["k", "k-out"], ["m", "m-out"]]) {
+  $(id).addEventListener("input", () => { $(out).textContent = $(id).value; });
+}
+$("ef").addEventListener("change", search);
+$("k").addEventListener("change", search);
+$("m").addEventListener("change", () => {
+  const m = Number($("m").value);
+  // Paint the warning before the first insert runs, not after: two frames is
+  // the cheapest guarantee that the status line is on screen first.
+  $("q").disabled = true;
+  $("go").disabled = true;
+  setStatus(
+    `rebuilding the index at M=${m} — about ${rebuildSeconds(m)} s, ` +
+    `search is off until it finishes…`,
+    "busy"
+  );
+  requestAnimationFrame(() => requestAnimationFrame(() => build(m)));
+});
+window.addEventListener("resize", () => { if (lastResult) drawTrace(lastResult); });
+
+boot().catch((error) => {
+  setStatus(error.message, "err");
+  $("results").innerHTML =
+    `<tr><td colspan="3" class="note err-text" style="padding:14px 8px">${escapeHtml(error.message)}</td></tr>`;
+});
+</script>
+</body>
+</html>
